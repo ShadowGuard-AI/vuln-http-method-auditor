@@ -23,7 +23,7 @@ def setup_argparse():
     parser.add_argument("-e", "--endpoints", nargs='+', help="Specific endpoints to test. If not provided, attempts to test all discovered endpoints.")
     parser.add_argument("-m", "--methods", nargs='+', default=HTTP_METHODS, help="HTTP methods to test (default: all).  Example: GET POST PUT DELETE")
     parser.add_argument("-o", "--output", help="Output file to save results (JSON format).")
-    parser.add_argument("--discover", action="store_true", help="Attempt to discover endpoints by crawling.") # Placeholder for future crawling functionality
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output, including the per method status codes.")
     parser.add_argument("--user-agent", default="VulnHTTPMethodAuditor/1.0", help="Custom User-Agent string.")
     parser.add_argument("--timeout", type=int, default=10, help="Request timeout in seconds.")
     parser.add_argument("--ignore-ssl", action="store_true", help="Ignore SSL certificate validation errors.")
@@ -45,7 +45,10 @@ def test_http_methods(url, endpoint, methods, user_agent="VulnHTTPMethodAuditor/
 
     Returns:
         dict: A dictionary containing the results of the HTTP method tests.
-              Keys are HTTP methods, values are boolean indicating if the method is allowed (status code not in 400-599).
+              Keys are HTTP methods. Values are True when the method itself
+              was accepted (a 2xx response), the string "redirect" for a
+              301, 302, 303, 307, or 308 response, False for any other
+              status, and None when the request itself failed.
               Returns None on failure.
     """
     results = {}
@@ -55,12 +58,14 @@ def test_http_methods(url, endpoint, methods, user_agent="VulnHTTPMethodAuditor/
         for method in methods:
             try:
                 logging.debug(f"Testing {method} on {full_url}")
-                response = requests.request(method, full_url, headers={'User-Agent': user_agent}, timeout=timeout, verify=not ignore_ssl)
+                response = requests.request(method, full_url, headers={'User-Agent': user_agent}, timeout=timeout, verify=not ignore_ssl, allow_redirects=False)
 
-                if 400 <= response.status_code < 600:
-                    results[method] = False
-                else:
+                if 200 <= response.status_code < 300:
                     results[method] = True
+                elif response.status_code in (301, 302, 303, 307, 308):
+                    results[method] = "redirect"
+                else:
+                    results[method] = False
 
                 logging.debug(f"{method} - Status Code: {response.status_code}")
 
@@ -97,24 +102,32 @@ def main():
     """
     args = setup_argparse()
 
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
     # Input validation
     if not args.url.startswith("http://") and not args.url.startswith("https://"):
         print("Error: URL must start with http:// or https://")
         sys.exit(1)
 
     if args.endpoints is None:
-        logging.warning("No endpoints specified.  Consider using --discover (not implemented) or providing specific endpoints with -e.")
         print("Error: No endpoints specified, this tool requires you to explicitly list the endpoints. Example: -e /admin /api/v1")
         sys.exit(1) #exit if no endpoints are provided
 
 
     all_results = {}
+    attempted = 0
+    answered = 0
 
     for endpoint in args.endpoints:
         logging.info(f"Auditing endpoint: {endpoint}")
         results = test_http_methods(args.url, endpoint, args.methods, args.user_agent, args.timeout, args.ignore_ssl)
         if results:
             all_results[endpoint] = results
+            for value in results.values():
+                attempted += 1
+                if value is not None:
+                    answered += 1
         else:
             logging.error(f"Failed to test HTTP methods for endpoint: {endpoint}")
 
@@ -122,6 +135,10 @@ def main():
         save_results_to_file(all_results, args.output)
     else:
         print(json.dumps(all_results, indent=4))  # Print to console if no output file specified.
+
+    if attempted == 0 or answered == 0:
+        logging.error("Audit failed: no method test received a response. No audit was completed.")
+        sys.exit(1)
 
     logging.info("Audit completed.")
 
