@@ -52,11 +52,18 @@ def test_http_methods(url, endpoint, methods, user_agent="VulnHTTPMethodAuditor/
               Returns None on failure.
     """
     results = {}
+    # urljoin rules apply in full: an endpoint starting with a slash drops
+    # any path prefix on the base URL, and an endpoint that is itself a
+    # full URL replaces the base outright. I pass endpoints through as
+    # written rather than second guessing either case.
     full_url = urljoin(url, endpoint)  # Ensure proper URL joining
 
     try:
         for method in methods:
             try:
+                # Method names go out exactly as supplied. A lower case get
+                # from --methods is a different probe than GET to some
+                # servers, and normalizing it here would hide that.
                 logging.debug(f"Testing {method} on {full_url}")
                 response = requests.request(method, full_url, headers={'User-Agent': user_agent}, timeout=timeout, verify=not ignore_ssl, allow_redirects=False)
 
@@ -131,6 +138,9 @@ def main():
         else:
             logging.error(f"Failed to test HTTP methods for endpoint: {endpoint}")
 
+    # Results are written before the answered gate below. A run that ends
+    # up exiting 1 can still leave a JSON file behind, possibly an empty
+    # object, so the file alone never proves an audit completed.
     if args.output:
         save_results_to_file(all_results, args.output)
     else:
